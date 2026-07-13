@@ -87,6 +87,83 @@ tesseract /tmp/after.png /tmp/after -l chi_sim --psm 6
 diff /tmp/before.txt /tmp/after.txt && echo "页面未变化" || echo "页面已切换"
 ```
 
+### 方法三：OpenCV 模板匹配（推荐）
+
+预先截取目标 UI 元素的截图保存为模板，用 OpenCV 在窗口截图中匹配定位。
+
+```bash
+# click_at_template — 给截图模板，返回中心坐标并点击
+click_at_template() {
+  local template=$1 window=$2
+
+  python3 -c "
+import cv2, numpy as np, sys
+
+shot = cv2.imread('/tmp/shot.png')
+template = cv2.imread('$template')
+h, w = template.shape[:2]
+res = cv2.matchTemplate(shot, template, cv2.TM_CCOEFF_NORMED)
+_, max_val, _, max_loc = cv2.minMaxLoc(res)
+
+if max_val < 0.7:
+    print(f'置信度过低: {max_val:.2f}', file=sys.stderr)
+    sys.exit(2)
+
+cx, cy = max_loc[0] + w//2, max_loc[1] + h//2
+print(f'{cx} {cy}')
+" 2>/dev/null || return 1
+
+  read cx cy
+  xdotool mousemove --window "$window" "$cx" "$cy" click 1
+}
+```
+
+使用示例：
+
+```bash
+# 1. 保存模板（只需做一次）
+import -window $WID /tmp/shot.png
+# 裁剪出"课程研发"tab 区域，保存为 tab_kaifa.png
+
+# 2. 自动点击
+import -window $WID /tmp/shot.png
+click_at_template "assets/tab_kaifa.png" $WID
+sleep 1
+
+# 3. 验证
+import -window $WID /tmp/shot2.png
+tesseract /tmp/shot2.png stdout -l chi_sim 2>/dev/null | grep "研发" \
+  && echo "✅ 导航成功" || echo "❌ 导航失败"
+```
+
+预置模板（本仓库 `assets/tab_*.png`）：
+
+| 文件名 | 对应 UI | 尺寸 |
+|--------|---------|------|
+| `tab_dashboard.png` | 底部导航「仪表盘」tab | 117×70 |
+| `tab_kaifa.png` | 底部导航「课程研发」tab | 150×70 |
+| `tab_jiaoxue.png` | 底部导航「教学管理」tab | 150×70 |
+
+## 三种定位方式对比
+
+| 维度 | OCR bounding box | 像素颜色探测 | OpenCV 模板匹配 |
+|------|-----------------|-------------|----------------|
+| **速度** | 慢（tesseract 全图 OCR） | 快 | 快 |
+| **抗 UI 变动** | 文字不变即可 | ❌ 颜色一变就崩 | ✅ 相似度容忍细微变化 |
+| **跨 session** | ✅ 文字通用 | ❌ 颜色可能变 | ✅ 截图通用 |
+| **维护成本** | 中（需解析 TSV） | 高（每区域手动调参） | **低**（存一次模板永久用） |
+| **依赖** | `tesseract` + 语言包 | ImageMagick | `opencv-python-headless` |
+| **定位粒度** | 单字级别 | 像素级别 | **区域级别**（整块 UI） |
+| **适合场景** | 首次探索、无模板 | 应急探测 UI 边界 | **日常自动化、回归测试** |
+
+### 推荐策略
+
+```
+首次探索 → OCR bounding box 找文字位置
+日常运行 → OpenCV 模板匹配（预存模板）
+应急调试 → 像素颜色探测
+```
+
 ## 已知限制
 
 - `xdotool` 使用**窗口相对坐标**（`--window` 参数），需精确计算 UI 元素位置
